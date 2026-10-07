@@ -1,0 +1,102 @@
+# =============================================================================
+#  lfOS (LumenFluxOS / 流光OS) sshd 加固配置
+#  对应设计方案 Phase 5：禁 root 登录、密钥优先、最小权限
+#
+#  设计原则（服务器暴露公网，SSH 是第一道门）：
+#    - 禁 root 直登（消除最常见的暴力破解目标）
+#    - 纯密钥认证（禁密码，从根上免疫字典攻击）
+#    - 限制认证尝试次数与并发会话
+#    - 关闭一切非必要功能（X11、agent 转发、tunnel）
+#    - 启用现代加密套件（禁 SHA-1 / CBC / 弱 DH）
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 一、网络与协议
+# -----------------------------------------------------------------------------
+Port 22
+AddressFamily inet
+ListenAddress 0.0.0.0
+# 需要 IPv6 时改为：AddressFamily any
+
+# -----------------------------------------------------------------------------
+# 二、认证：纯密钥 + 禁 root
+# -----------------------------------------------------------------------------
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitEmptyPasswords no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+
+# 关于 PAM：lfOS 编译 openssh 时使用 --with-pam=no（不引入 PAM 依赖，收敛攻击面）。
+# 因此 **不能出现 UsePAM 这一行** —— 该指令本身不会被编译进去，写了会直接报错：
+#     /etc/ssh/sshd_config line N: Unsupported option UsePAM
+# 注意这与「设成 no」不同：设 no 同样报错，必须整行删除。
+# （实测踩到：sshd 每次启动都失败，而错误只在调试模式下方可见。）
+
+# 主机密钥
+# 只声明 ED25519：现代推荐算法，密钥生成瞬时完成，无需大量熵。
+# 注意：这里不能声明不存在的密钥文件 —— sshd 启动时会因找不到文件而直接失败。
+# （此前的 init 卡死问题就是 RSA 密钥生成耗尽熵导致的，详见 scripts/82-install-init.sh）
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+# 认证尝试限制（配合 nftables 的速率限制形成双层防护）
+MaxAuthTries 3
+MaxSessions 4
+LoginGraceTime 30
+MaxStartups 10:30:60
+
+# -----------------------------------------------------------------------------
+# 三、关闭非必要功能（最小攻击面）
+# -----------------------------------------------------------------------------
+X11Forwarding no
+AllowAgentForwarding no
+# lfOS: 允许本地端口转发（SSH 隧道），禁止远程转发。
+# 远程访问 VM 内服务时隧道比 VBox NAT 转发可靠（实测某些端口 NAT 转发不通）。
+AllowTcpForwarding local
+PermitTunnel no
+GatewayPorts no
+PermitUserEnvironment no
+Compression no
+PrintMotd no
+PrintLastLog yes
+UseDNS no
+
+# -----------------------------------------------------------------------------
+# 四、加密套件：只留现代算法
+# -----------------------------------------------------------------------------
+# 密钥交换：只留 ECDH 与 Curve25519
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+
+# 主机密钥算法：禁 ssh-rsa（SHA-1）
+HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512,rsa-sha2-256,ecdsa-sha2-nistp256
+
+# 对称加密：只留 AEAD（禁 CBC 模式，防 BEAST/POODLE 类攻击）
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+
+# MAC：只留 ETM（Encrypt-then-MAC），AEAD 套件下的兜底
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
+
+# -----------------------------------------------------------------------------
+# 五、会话与日志
+# -----------------------------------------------------------------------------
+# 空闲超时：15 分钟无操作断开（带 3 次保活探测）
+ClientAliveInterval 300
+ClientAliveCountMax 3
+
+# 日志级别：VERBOSE 记录密钥指纹，便于审计
+LogLevel VERBOSE
+SyslogFacility AUTH
+
+# 限制可登录用户（按需调整；默认允许 wheel/sudo 组）
+# AllowGroups wheel sudo
+# AllowUsers lfos
+
+# -----------------------------------------------------------------------------
+# 六、SSH 服务端进程加固（配合 systemd drop-in 使用）
+# -----------------------------------------------------------------------------
+# 见 /etc/systemd/system/sshd.service.d/hardening.conf
+#   - NoNewPrivileges=yes
+#   - ProtectSystem=strict
+#   - PrivateTmp=yes
+#   - SystemCallFilter=@system-service

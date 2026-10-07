@@ -1,0 +1,548 @@
+# =============================================================================
+#  lfOS (LumenFluxOS / 流光OS) 内核配置片段 —— 服务器取向 + VirtualBox 兼容
+# -----------------------------------------------------------------------------
+#  用法：scripts/kconfig/merge_config.sh -m <base_defconfig> <本文件>
+#
+#  三宗旨落地方式：
+#    [安全] KSPP *加固* 项全开；严格区分 hardening 与 debugging ——
+#           凡属 debug 的性能杀手（DEBUG_VM / PAGE_POISONING / INIT_ON_FREE /
+#           SLUB_DEBUG_ON / DEBUG_LIST）一律关闭，它们不是加固项。
+#    [性能] PREEMPT_NONE（吞吐优先）、schedutil、BBR、多队列 IO、THP、NUMA
+#    [占用] 无模块单体内核、裁剪无关子系统与文件系统、无调试符号
+#
+#  兼容目标：Oracle VirtualBox 7.2（IDE/SATA + e1000 + VMSVGA + 8250 串口）
+# =============================================================================
+
+# =============================================================================
+# 一、基础平台：x86_64 服务器，单体内核
+# =============================================================================
+# 低占用 + 高安全：禁用模块机制
+#   - 没有可加载模块 = 消除模块加载这条攻击路径，也无需模块签名密钥管理
+#   - 启动更快、内存更省、无 .ko 体积
+# 代价：新增驱动需重编内核。lfOS 定位固定用途服务器，这个交换划算。
+# CONFIG_MODULES is not set
+
+# EXPERT：解锁底层选项的控制权（自身无运行时代价）。
+# 必须开启，否则形如
+#     config SLUB_DEBUG
+#         default y
+#         bool "..." if EXPERT
+# 的符号不可配置，会被 default y 强制打开 —— 表现为「改了配置却不生效」。
+CONFIG_EXPERT=y
+
+CONFIG_SMP=y
+CONFIG_NR_CPUS=16
+CONFIG_64BIT=y
+CONFIG_IA32_EMULATION=y
+# 32 位 x32 ABI 极少使用且增加攻击面
+# CONFIG_X86_X32_ABI is not set
+
+# =============================================================================
+# 二、VirtualBox 必需硬件支持（缺一不可）
+# =============================================================================
+
+# --- 2.1 存储：VBox 默认 IDE(PIIX) + SATA(AHCI) ---
+CONFIG_ATA=y
+CONFIG_ATA_PIIX=y
+CONFIG_ATA_GENERIC=y
+CONFIG_SATA_AHCI=y
+CONFIG_SATA_PMP=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_SCSI=y
+CONFIG_SCSI_MOD=y
+CONFIG_BLK_DEV=y
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_BLK_DEV_RAM=y
+CONFIG_BLK_DEV_RAM_SIZE=16384
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+CONFIG_RD_XZ=y
+
+# --- 2.2 显示：VMSVGA（VBox 默认，由 vmwgfx 驱动）+ VBoxVGA，VESA 兜底 ---
+# 注意：内核中 VMSVGA 控制器的驱动符号是 DRM_VMWGFX（VMware SVGA 驱动），
+#       不存在名为 DRM_VMSVGA 的选项 —— 写错会被 kconfig 静默忽略，
+#       后果是 VirtualBox 里没有可用显卡驱动。
+CONFIG_PCI=y
+CONFIG_PCI_MSI=y
+CONFIG_DRM=y
+CONFIG_DRM_VMWGFX=y
+CONFIG_DRM_VBOXVIDEO=y
+CONFIG_FB=y
+CONFIG_FB_VESA=y
+CONFIG_FB_EFI=y
+
+# --- uvesafb：用户空间 VESA 模式设置 ---
+# 为什么加：VirtualBox 的 vboxvideo 内核驱动会让 Xorg 触发内核 Oops
+# （vbox_crtc_set_base_and_mode 空指针，CR2=0x68），DRM 路线不可用；
+# 退回 vesafb 后其分辨率固定且只读，Xorg 的 fbdev 驱动无法初始化。
+# uvesafb 通过 v86d 实现真正的模式设置，Xorg 才能起来。
+# 服务器版不传 video=uvesafb 参数，不受影响，两版共用一个内核。
+# lfOS: uvesafb 已禁用（实测结论，勿再开启）
+#   编入 uvesafb 后，它在 VirtualBox 下会自动 probe 并**必然失败**：
+#       uvesafb: Getting VBE info block failed (eax=0x4f00, err=-3)
+#       uvesafb.0: probe with driver uvesafb failed with error -22
+#   失败后 vesafb **不会**接管，结果是连 /dev/fb0 都没有。
+#   不带 uvesafb 时，vesafb 能正常提供 1024x768x24 的 framebuffer。
+# CONFIG_FB_UVESA is not set
+
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
+CONFIG_VGA_CONSOLE=y
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_HW_CONSOLE=y
+CONFIG_UNIX98_PTYS=y
+CONFIG_TTY=y
+
+# --- 2.3 输入：i8042 PS/2 键盘（VBox 图形控制台可用） ---
+CONFIG_INPUT=y
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_KEYBOARD_ATKBD=y
+CONFIG_SERIO=y
+CONFIG_SERIO_I8042=y
+CONFIG_SERIO_LIBIO=y
+CONFIG_INPUT_MOUSE=y
+CONFIG_MOUSE_PS2=y
+
+# --- 2.4 网卡：VBox 默认 Intel PRO/1000 ---
+CONFIG_NET_CORE=y
+CONFIG_NETDEVICES=y
+CONFIG_ETHERNET=y
+CONFIG_NET_VENDOR_INTEL=y
+CONFIG_E1000=y
+CONFIG_E1000E=y
+CONFIG_VIRTIO_NET=y
+CONFIG_MII=y
+
+# --- 2.5 串口 8250：VBox 串口重定向到文件 = 无头调试通道（关键） ---
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_NR_UARTS=4
+CONFIG_SERIAL_8250_PCI=y
+CONFIG_SERIAL_CORE=y
+CONFIG_SERIAL_CORE_CONSOLE=y
+CONFIG_PRINTK=y
+CONFIG_EARLY_PRINTK=y
+
+# --- 2.6 时钟/半虚拟化：VBox 用 ACPI + HPET ---
+CONFIG_HYPERVISOR_GUEST=y
+CONFIG_PARAVIRT=y
+CONFIG_PARAVIRT_CLOCK=y
+CONFIG_KVM_GUEST=y
+CONFIG_ACPI=y
+CONFIG_X86_LOCAL_APIC=y
+CONFIG_X86_IO_APIC=y
+CONFIG_HPET_TIMER=y
+CONFIG_HPET_EMULATE_RTC=y
+CONFIG_HZ_1000=y
+CONFIG_HZ=1000
+CONFIG_NO_HZ_IDLE=y
+CONFIG_HIGH_RES_TIMERS=y
+
+# --- 2.7 USB（基础支持，便于后续挂载） ---
+CONFIG_USB=y
+CONFIG_USB_SUPPORT=y
+CONFIG_USB_XHCI_HCD=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_OHCI_HCD=y
+CONFIG_USB_STORAGE=y
+CONFIG_USB_HID=y
+
+# =============================================================================
+# 三、文件系统：只留服务器必需（低占用 + 减少攻击面）
+# =============================================================================
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_USE_FOR_EXT2=y
+CONFIG_JBD2=y
+CONFIG_FS_MBCACHE=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_CONFIGFS_FS=y
+CONFIG_FUSE_FS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_ISO9660_FS=y
+CONFIG_VFAT_FS=y
+
+# --- squashfs：lfOS 只读根的核心（不可变服务器设计）---
+# 踩过的坑：最初裁剪文件系统时只写了「关掉 btrfs/xfs/ntfs…」，
+# 却忘了显式打开 squashfs —— 因为 x86_64_defconfig 默认不启用它。
+# 后果是内核完全不认 squashfs，initramfs 无论怎么挂都失败，
+# 只能落到救援 shell，而日志里根本看不到「文件系统不支持」这种直白提示。
+# 结论：裁剪型 defconfig 必须显式声明「需要的」文件系统，不能只声明「不要的」。
+CONFIG_SQUASHFS=y
+# FILE_DIRECT：跳过页缓存，直接从块设备读，减少内存占用（低占用宗旨）
+CONFIG_SQUASHFS_FILE_DIRECT=y
+# 多核并行解压（性能宗旨）
+CONFIG_SQUASHFS_DECOMP_MULTI=y
+CONFIG_SQUASHFS_DECOMP_MULTI_PERCPU=y
+CONFIG_SQUASHFS_XATTR=y
+# 压缩算法：xz 是打包时实际使用的格式，必须支持；
+# zlib 作为兼容后备（某些镜像可能用 gzip）
+CONFIG_SQUASHFS_ZLIB=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_SQUASHFS_4K_DEVBLK_SIZE=y
+# 内嵌模式不启用（我们的 squashfs 是独立镜像而非内嵌内核）
+# CONFIG_SQUASHFS_EMBEDDED is not set
+CONFIG_SQUASHFS_FRAGMENT_CACHE_SIZE=3
+CONFIG_NLS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_NLS_UTF8=y
+# 裁掉服务器用不到的文件系统（体积 + 攻击面）
+# CONFIG_BTRFS_FS is not set
+# CONFIG_XFS_FS is not set
+# CONFIG_GFS2_FS is not set
+# CONFIG_OCFS2_FS is not set
+# CONFIG_NTFS3_FS is not set
+# CONFIG_F2FS_FS is not set
+# CONFIG_JFS_FS is not set
+# CONFIG_REISERFS_FS is not set
+# CONFIG_HFS_FS is not set
+# CONFIG_HFSPLUS_FS is not set
+# CONFIG_UDF_FS is not set
+# CONFIG_NFS_FS is not set
+# CONFIG_CIFS is not set
+# CONFIG_9P_FS is not set
+
+# =============================================================================
+# 四、网络栈：吞吐取向（性能）
+# =============================================================================
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_IPV6=y
+CONFIG_UNIX=y
+CONFIG_PACKET=y
+CONFIG_NETFILTER=y
+CONFIG_NETFILTER_ADVANCED=y
+CONFIG_NF_CONNTRACK=y
+CONFIG_NF_TABLES=y
+CONFIG_NF_TABLES_INET=y
+CONFIG_NF_TABLES_IPV4=y
+CONFIG_NF_TABLES_IPV6=y
+CONFIG_NETFILTER_XTABLES=y
+CONFIG_IP_NF_IPTABLES=y
+CONFIG_IP_NF_FILTER=y
+CONFIG_IP_NF_TARGET_REJECT=y
+CONFIG_IP6_NF_IPTABLES=y
+CONFIG_BRIDGE=y
+CONFIG_VLAN_8021Q=y
+CONFIG_TCP_CONG_ADVANCED=y
+CONFIG_TCP_CONG_BBR=y
+CONFIG_TCP_CONG_CUBIC=y
+# 注意：DEFAULT_TCP_CONG 是 choice 组自动生成的字符串，直接写它无效。
+# 真正的选择靠 choice 成员符号，且必须先关掉默认成员，否则不生效：
+# 这一切换由 50-build-kernel.sh 在 olddefconfig 之后强制执行。
+# CONFIG_DEFAULT_CUBIC is not set
+CONFIG_DEFAULT_BBR=y
+CONFIG_NET_SCHED=y
+CONFIG_NET_SCH_FQ=y
+# 默认 qdisc 同样是 choice 组：pfifo_fast 为默认成员，必须先关掉
+# CONFIG_DEFAULT_PFIFO_FAST is not set
+CONFIG_DEFAULT_FQ=y
+CONFIG_NET_SCH_FQ_CODEL=y
+CONFIG_NET_CLS_ACT=y
+CONFIG_NET_SCH_INGRESS=y
+CONFIG_INET_TCP_DIAG=y
+CONFIG_INET_UDP_DIAG=y
+# 裁掉不需要的网络协议
+# CONFIG_IPX is not set
+# CONFIG_ATALK is not set
+# CONFIG_X25 is not set
+# CONFIG_LAPB is not set
+# CONFIG_PHONET is not set
+# CONFIG_IEEE802154 is not set
+# CONFIG_BT is not set
+# CONFIG_WLAN is not set
+# CONFIG_WIRELESS is not set
+# CONFIG_RFKILL is not set
+
+# =============================================================================
+# 五、安全加固（KSPP）—— 只取「加固」，不取「调试」
+# =============================================================================
+
+# --- 5.1 编译期加固（零/极低运行开销） ---
+CONFIG_STACKPROTECTOR=y
+CONFIG_STACKPROTECTOR_STRONG=y
+CONFIG_STACKPROTECTOR_PER_TASK=y
+CONFIG_FORTIFY_SOURCE=y
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_ZERO_CALL_USED_REGS=y
+
+# --- 5.2 地址空间与内存布局随机化（对抗 ROP/内存破坏） ---
+CONFIG_RANDOMIZE_BASE=y
+CONFIG_RANDOMIZE_MEMORY=y
+CONFIG_RANDOMIZE_MEMORY_PHYSICAL_PADDING=0xa
+# 6.x 后期起缓解措施统一到 MITIGATION_ 前缀（旧名 PAGE_TABLE_ISOLATION 已废弃）
+CONFIG_MITIGATION_PAGE_TABLE_ISOLATION=y
+CONFIG_MITIGATION_RETPOLINE=y
+CONFIG_MITIGATION_SPECTRE_V1=y
+CONFIG_MITIGATION_SPECTRE_V2=y
+CONFIG_RANDOM_KMALLOC_CACHES=y
+CONFIG_SHUFFLE_PAGE_ALLOCATOR=y
+
+# --- 5.3 分配器加固（低开销，非调试） ---
+CONFIG_SLAB_FREELIST_RANDOM=y
+CONFIG_SLAB_FREELIST_HARDENED=y
+# 注意：INIT_ON_ALLOC 有约 1% 开销（内核 5.3+ 已优化），安全收益显著，保留
+CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y
+# INIT_ON_FREE 开销更大且收益递减，关闭
+# CONFIG_INIT_ON_FREE_DEFAULT_ON is not set
+# SLUB_DEBUG / SLUB_DEBUG_ON 属于调试：每个对象附加元数据，内存与性能双重损失
+# CONFIG_SLUB_DEBUG is not set
+
+# --- 5.4 内核内存段保护 ---
+CONFIG_STRICT_KERNEL_RWX=y
+CONFIG_STRICT_MODULE_RWX=y
+CONFIG_DEBUG_WX=y
+
+# --- 5.5 运行时防护 ---
+CONFIG_SECURITY=y
+CONFIG_SECURITY_NETWORK=y
+CONFIG_SECURITY_SELINUX=y
+CONFIG_SECURITY_SELINUX_BOOTPARAM=y
+CONFIG_SECURITY_SELINUX_DEVELOP=y
+CONFIG_SECURITY_SELINUX_AVC_STATS=y
+CONFIG_SECURITY_YAMA=y
+CONFIG_SECURITY_LOCKDOWN_LSM=y
+CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+CONFIG_HAVE_ARCH_SECCOMP_FILTER=y
+CONFIG_SECURITY_DMESG_RESTRICT=y
+CONFIG_SECURITY_PERF_EVENTS_RESTRICT=y
+
+# --- 5.6 关闭高危历史遗留特性 ---
+CONFIG_LEGACY_VSYSCALL_NONE=y
+# CONFIG_LEGACY_VSYSCALL_EMULATE is not set
+# CONFIG_LEGACY_VSYSCALL_XONLY is not set
+# /dev/mem 与 /dev/kmem 可改写内核内存，生产必须关闭
+# CONFIG_DEVMEM is not set
+# CONFIG_DEVKMEM is not set
+# CONFIG_PROC_KCORE is not set
+# CONFIG_ACPI_CUSTOM_METHOD is not set
+# CONFIG_KEXEC is not set
+# CONFIG_HIBERNATION is not set
+# CONFIG_BINFMT_MISC is not set
+# 禁止内核调用用户态 helper（消除 usermode helper 提权路径）
+CONFIG_STATIC_USERMODEHELPER=y
+CONFIG_STATIC_USERMODEHELPER_PATH=""
+
+# --- 5.7 内核崩溃行为：生产环境不 panic 重启循环 ---
+CONFIG_BUG=y
+# PANIC_ON_OOPS 会让单次内核错误直接宕机，生产环境弊大于利
+# CONFIG_PANIC_ON_OOPS is not set
+# CONFIG_BOOTPARAM_HUNG_TASK_PANIC is not set
+
+# =============================================================================
+# 六、性能调优
+# =============================================================================
+# 抢占模型：服务器选 none（吞吐优先，减少上下文切换）
+CONFIG_PREEMPT_NONE=y
+# CONFIG_PREEMPT_VOLUNTARY is not set
+# CONFIG_PREEMPT is not set
+
+# 调度器
+CONFIG_SCHED_SMT=y
+CONFIG_SCHED_MC=y
+CONFIG_SCHED_CORE=y
+CONFIG_CPU_FREQ=y
+CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
+CONFIG_CPU_IDLE=y
+
+# 内存：THP + 压缩 + zram
+CONFIG_TRANSPARENT_HUGEPAGE=y
+CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS=y
+CONFIG_COMPACTION=y
+CONFIG_MIGRATION=y
+CONFIG_ZSWAP=y
+CONFIG_ZRAM=y
+CONFIG_ZSMALLOC=y
+CONFIG_ZBUD=y
+
+# IO：多队列 + mq-deadline（虚拟盘友好）
+CONFIG_BLK_MQ_PCI=y
+CONFIG_MQ_IOSCHED_DEADLINE=y
+CONFIG_MQ_IOSCHED_KYBER=y
+CONFIG_IOSCHED_BFQ=y
+CONFIG_BLK_DEV_THROTTLING=y
+CONFIG_BLK_CGROUP=y
+
+# 网络性能
+CONFIG_NET_RX_BUSY_POLL=y
+CONFIG_BUSY_POLL=y
+CONFIG_RCU_NOCB_CPU=y
+CONFIG_TREE_RCU=y
+
+# =============================================================================
+# 七、裁剪（低占用）
+# =============================================================================
+# 声音 / 多媒体
+# CONFIG_SOUND is not set
+# CONFIG_SND is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_VIDEO_DEV is not set
+# CONFIG_DVB_CORE is not set
+# 输入外设
+# CONFIG_INPUT_JOYSTICK is not set
+# CONFIG_INPUT_TABLET is not set
+# CONFIG_INPUT_TOUCHSCREEN is not set
+# 其他总线/子系统
+# CONFIG_PRINTER is not set
+# CONFIG_HAMRADIO is not set
+# CONFIG_INFINIBAND is not set
+# CONFIG_ISDN is not set
+# CONFIG_PHONE is not set
+# CONFIG_CAIF is not set
+# CONFIG_NFC is not set
+# CONFIG_MTD is not set
+# 独显驱动（只留 VMSVGA/VBoxVGA 虚拟显示）
+# CONFIG_DRM_I915 is not set
+# CONFIG_DRM_NOUVEAU is not set
+# CONFIG_DRM_RADEON is not set
+# CONFIG_DRM_AMDGPU is not set
+# CONFIG_AGP is not set
+# lfOS 是 guest，不做宿主侧虚拟化
+# CONFIG_KVM is not set
+# CONFIG_XEN is not set
+# 追踪/性能分析框架（生产不需要；注意这不是加固项）
+# CONFIG_FTRACE is not set
+# CONFIG_KPROBES is not set
+# CONFIG_BPF_SYSCALL is not set
+# CONFIG_BPF_JIT is not set
+# 调试符号：体积杀手，只留 kallsyms 便于 oops 定位
+# CONFIG_DEBUG_INFO is not set
+# CONFIG_DEBUG_INFO_DWARF5 is not set
+CONFIG_DEBUG_INFO_NONE=y
+CONFIG_KALLSYMS=y
+# CONFIG_KALLSYMS_ALL is not set
+
+# =============================================================================
+# 八、启动与标识
+# =============================================================================
+CONFIG_DEFAULT_HOSTNAME="lfos"
+# 内核版本加 -lfos 后缀，uname -r 形如 6.15.4-lfos
+CONFIG_LOCALVERSION="-lfos"
+CONFIG_LOCALVERSION_AUTO=n
+CONFIG_PRINTK=y
+CONFIG_PRINTK_TIME=y
+# 关闭启动 logo（加速启动、减体积）
+# CONFIG_LOGO is not set
+CONFIG_DETECT_HUNG_TASK=y
+CONFIG_DEFAULT_HUNG_TASK_TIMEOUT=120
+
+# -----------------------------------------------------------------------------
+# 内置内核命令行（UEFI 引导的关键）
+#
+# 背景：lfOS 用内核自带的 EFI stub 直接作为 UEFI 引导器（零引导器设计）。
+#       EFI 固件不会像 isolinux 那样传 APPEND 参数，因此内核必须自带命令行。
+#
+# 踩过的坑：不能用 `objcopy --add-section .cmdline=...` 后处理 bzImage ——
+#       bzImage 是自解压格式，头部记录了压缩数据偏移，objcopy 加段会破坏
+#       该布局，导致固件报 "Failed to decompress kernel"。必须编译期内置。
+#
+# 注意 1：不启用 CMDLINE_OVERRIDE，这样 BIOS 侧 isolinux 的 APPEND 仍可覆盖，
+#         两种引导方式各用各的参数。
+# 注意 2：initrd 路径中的反斜杠必须写成「双反斜杠」。
+#         Kconfig 解析双引号字符串时会处理转义：写 `\i` 会得到 `i`，
+#         必须写 `\\i` 才能在 .config 中得到字面的 `\i`。
+#         而 EFI stub 要求的 initrd 路径正是 Windows 风格的反斜杠形式。
+# -----------------------------------------------------------------------------
+# 编译期默认：信任 CPU 硬件随机源（RDRAND）。
+# 与 cmdline 的 random.trust_cpu=on 是两处独立开关，都设上更保险：
+# cmdline 决定运行期行为，此配置决定内核默认值。
+# 详见下方 CONFIG_CMDLINE 处的完整说明。
+CONFIG_RANDOM_TRUST_CPU=y
+CONFIG_RANDOM_TRUST_BOOTLOADER=n
+
+CONFIG_CMDLINE_BOOL=y
+# -----------------------------------------------------------------------------
+#  random.trust_cpu=on 的理由（重要权衡）：
+#
+#  最初写的是 off —— 「不盲信硬件熵源」，从纯安全角度更严谨。
+#  但实测在虚拟机中后果严重：VM 熵源稀缺，crng 长时间不初始化
+#  （内核日志里始终没有 "crng init done"），于是任何调用 getrandom()
+#  的程序都会**永久阻塞**。具体表现：
+#      - init 里后台的 ssh-keygen 卡死不返回，SSH 主机密钥永远生成不出来
+#      - 日志停在「SSH 服务正在后台启动」，之后毫无输出，极难定位
+#      - sshd 因无主机密钥而启动失败
+#  也就是说，坚持 off 反而让系统处于「SSH 不可用」的状态 —— 这本身就是
+#  更大的安全问题。
+#
+#  trust_cpu=on 让内核信任 CPU 的 RDRAND 指令，crng 立即就绪。
+#  这是主流发行版（含 Debian/Ubuntu/RHEL）的默认做法。
+#  仍然保留的防护：硬件 RNG 只作为**熵源之一**参与混池，并非唯一来源；
+#  若对 CPU 厂商完全不信任，可改回 off 并额外部署 haveged/rngd 补熵。
+# -----------------------------------------------------------------------------
+CONFIG_CMDLINE="console=tty0 console=ttyS0,115200 earlycon=uart8250,io,0x3f8,115200n8 root=/dev/ram0 rw loglevel=7 ignore_loglevel slab_nomerge init_on_alloc=1 init_on_free=0 page_alloc.shuffle=1 pti=on vsyscall=none random.trust_cpu=on initrd=\\initramfs-lfos.cpio.gz"
+# CONFIG_CMDLINE_OVERRIDE is not set
+
+# ---------------------------------------------------------------------------
+# nftables 具体表达式与语句（2026-10 补齐）
+#
+# 教训：最初只写了 CONFIG_NF_TABLES=y（框架）和 NF_TABLES_INET/IPV4/IPV6，
+# 以为防火墙就能用了。实测 nft -f /etc/nftables.conf 报：
+#     /etc/nftables.conf:34:9-16: Error: Could not process rule: No such file or directory
+#     /etc/nftables.conf:37:9-16: Error: Could not process rule: No such file or directory
+# 对应规则是 `ct state established,related accept` 与 `ct state invalid counter drop`。
+# 原因是内核里一个 CONFIG_NFT_* 都没有 —— 框架在，但「表达式」全缺，
+# 所以 ct/counter/limit 这些关键字内核根本不认识。
+# 这与「裁剪 defconfig 时必须显式声明需要什么」是同一类问题。
+CONFIG_NFT_CT=y
+CONFIG_NFT_COUNTER=y
+CONFIG_NFT_LIMIT=y
+CONFIG_NFT_LOG=y
+CONFIG_NFT_REJECT=y
+CONFIG_NFT_NAT=y
+CONFIG_NFT_MASQ=y
+CONFIG_NFT_REDIR=y
+CONFIG_NFT_COMPAT=y
+CONFIG_NFT_HASH=y
+CONFIG_NFT_NUMGEN=y
+CONFIG_NFT_SOCKET=y
+CONFIG_NFT_OSF=y
+CONFIG_NFT_TPROXY=y
+CONFIG_NFT_SYNPROXY=y
+CONFIG_NFT_FIB=y
+CONFIG_NFT_FIB_INET=y
+CONFIG_NFT_DUP_IPV4=y
+CONFIG_NFT_DUP_IPV6=y
+CONFIG_NFT_REJECT_IPV4=y
+CONFIG_NFT_REJECT_IPV6=y
+CONFIG_NFT_REJECT_INET=y
+CONFIG_NFT_CHAIN_ROUTE_IPV4=y
+CONFIG_NFT_CHAIN_NAT_IPV4=y
+CONFIG_NFT_CHAIN_ROUTE_IPV6=y
+CONFIG_NFT_CHAIN_NAT_IPV6=y
+CONFIG_NFT_MASQ_IPV4=y
+CONFIG_NFT_MASQ_IPV6=y
+CONFIG_NFT_REDIR_IPV4=y
+CONFIG_NFT_REDIR_IPV6=y
+# conntrack 的 netlink 接口（nft 的 ct 表达式经由它工作）
+CONFIG_NF_CONNTRACK_NETLINK=y
+CONFIG_NF_CONNTRACK_MARK=y
+CONFIG_NF_CONNTRACK_SECMARK=y
+CONFIG_NETFILTER_NETLINK=y
+CONFIG_NETFILTER_NETLINK_GLUE_CT=y
+# 日志后端（规则里的 log 语句需要）
+CONFIG_NF_LOG_SYSLOG=y
+CONFIG_NETFILTER_XT_TARGET_LOG=y
+
+# --- ufw 所需的 netfilter 扩展（实测 ufw 官方规则会用到）---
+# ufw 的 before.rules / before6.rules / user.rules 用到：
+#   -m limit（速率限制）  → CONFIG_NETFILTER_XT_MATCH_LIMIT
+#   -m hl（hop-limit/TTL）→ CONFIG_NETFILTER_XT_MATCH_HL
+#   -m rt（IPv6 路由头）  → CONFIG_IP6_NF_MATCH_RT
+#   -j REJECT             → CONFIG_IP_NF_TARGET_REJECT / IP6_NF_TARGET_REJECT（已启用）
+#
+# ⚠ 踩坑记录：这两个符号在 Linux 6.15 里**不存在**，
+#   kconfig 对未知符号是静默忽略的（不报错、也不写进 .config）：
+#       CONFIG_NETFILTER_XT_TARGET_REJECT   ← 不存在，正确名是 IP_NF_TARGET_REJECT
+#       CONFIG_NETFILTER_XT_MATCH_RT        ← 不存在，正确名是 IP6_NF_MATCH_RT
+CONFIG_NETFILTER_XT_MATCH_LIMIT=y
+CONFIG_NETFILTER_XT_MATCH_HL=y
+CONFIG_IP6_NF_MATCH_RT=y

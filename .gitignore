@@ -1,0 +1,30 @@
+# 构建产物（体积大，通过 GitHub Release 附件分发，不进仓库）
+build/
+dl/
+wsl/
+vbox/
+*.iso
+*.raw
+*.vdi
+*.vmdk
+*.qcow2
+*.squashfs
+*.ext4
+*.cpio
+*.cpio.gz
+*.tar.xz
+*.tar.gz
+
+# 临时与备份
+_*.sh
+*.bak
+*.bak-*
+*~
+*.tmp
+*.log
+
+# 凭据（绝对不要提交）
+*.token
+*secret*
+.env
+secrets/
