@@ -43,7 +43,7 @@ def _arg_value(flag, default):
 HOST = _arg_value("--host", os.environ.get("LFOS_HOST", "127.0.0.1"))
 PORT = int(_arg_value("--port", os.environ.get("LFOS_PORT", 2222)))
 USER = _arg_value("--user", os.environ.get("LFOS_USER", "root"))
-PASSWORD = _arg_value("--password", os.environ.get("LFOS_PASSWORD", ""))
+PASSWORD = _arg_value("--password", os.environ.get("LFOS_PASSWORD", "lfos"))
 
 
 def human(n):

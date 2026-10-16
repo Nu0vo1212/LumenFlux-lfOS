@@ -1,4 +1,4 @@
-# 构建产物（体积大，通过 GitHub Release 附件分发，不进仓库）
+# 构建产物（体积大，由 Release 附件分发而非仓库）
 build/
 dl/
 wsl/
@@ -10,7 +10,6 @@ vbox/
 *.qcow2
 *.squashfs
 *.ext4
-*.cpio
 *.cpio.gz
 *.tar.xz
 *.tar.gz
@@ -25,6 +24,6 @@ _*.sh
 
 # 凭据（绝对不要提交）
 *.token
-*secret*
-.env
+*token*.txt
 secrets/
+.env

@@ -67,7 +67,8 @@ except ImportError:
 HOST = "127.0.0.1"      # 宿主机回环；VirtualBox NAT 把 2222 转发到虚拟机的 22
 PORT = 2222
 USER = "root"
-PASSWORD = os.environ.get("LFOS_PASSWORD", "")   # 请通过环境变量提供；示例中不写死凭据
+PASSWORD = "lfos"
+
 # 目标系统是自建的最小化发行版，握手/响应可能比常规服务器慢，给足超时
 CONNECT_TIMEOUT = 15
 CMD_TIMEOUT = 120
