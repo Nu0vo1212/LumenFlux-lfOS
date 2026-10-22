@@ -199,7 +199,7 @@ do_gate() {
   req CONFIG_EXT4_FS              "根文件系统"
   req CONFIG_DEVTMPFS             "/dev 动态设备节点"
   req CONFIG_DEVTMPFS_MOUNT       "自动挂载 /dev"
-  req CONFIG_DRM_VMWGFX           "VBox VMSVGA 显卡（驱动真名 VMWGFX）"
+  off CONFIG_DRM_VMWGFX           "图形栈已移除（服务器版无图形；实测 VirtualBox 下 vmwgfx 报 unsupported hypervisor）"
   req CONFIG_FRAMEBUFFER_CONSOLE  "控制台显示"
   req CONFIG_VT                    "虚拟终端"
   req CONFIG_INPUT_KEYBOARD       "键盘输入"
