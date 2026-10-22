@@ -65,7 +65,7 @@ LABEL lfos
     MENU LABEL lfOS Server (LumenFluxOS / 流光OS)
     LINUX /boot/bzImage
     INITRD /boot/boot-initramfs.cpio.gz
-    APPEND root=/dev/sda1 rw rootflags=noatime console=tty0 console=ttyS0,115200 quiet
+    APPEND root=/dev/sda1 rw rootflags=noatime console=tty0 console=ttyS0,115200 quiet acpi_osi=Linux tsc=reliable
 
 LABEL lfos-verbose
     MENU LABEL lfOS Server（完整启动日志）

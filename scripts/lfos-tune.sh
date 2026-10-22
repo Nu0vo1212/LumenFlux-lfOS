@@ -214,6 +214,92 @@ vm.swappiness = 10
 vm.dirty_ratio = 20
 EOF
     fi
+
+    if [ ! -f "$TUNE_DIR/container.conf" ]; then
+        cat > "$TUNE_DIR/container.conf" <<'EOF'
+# 容器宿主场景（Docker / Podman / containerd）
+#
+# 特点：容器共享宿主内核，大量 veth 对、网桥转发、iptables 规则链。
+# 重点：网桥转发、ARP 邻居表、连接跟踪表、inotify、进程与句柄上限。
+#
+# ⚠ 重要提示：lfOS 当前内核未启用 CONFIG_USER_NS，
+#   所以**不能跑 rootless 容器**，只能以 root 身份运行普通容器。
+#   要支持 rootless 需要改内核配置重新编译。
+
+# 网桥与转发（容器网络必需）
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+
+# ARP 邻居表：veth 对多了之后容易撑满
+net.ipv4.neigh.default.gc_thresh1 = 4096
+net.ipv4.neigh.default.gc_thresh2 = 8192
+net.ipv4.neigh.default.gc_thresh3 = 16384
+
+# 连接跟踪：每个容器的端口映射都占用表项
+net.netfilter.nf_conntrack_max = 1048576
+
+# 端口复用：大量端口映射
+net.ipv4.ip_local_port_range = 10240 65535
+net.ipv4.tcp_tw_reuse = 1
+
+# 文件句柄与 inotify（容器内应用常用）
+fs.file-max = 8388608
+fs.nr_open = 2097152
+fs.inotify.max_user_watches = 1048576
+fs.inotify.max_user_instances = 1024
+
+# 内存：容器内存不该被换出
+vm.swappiness = 10
+vm.overcommit_memory = 1
+
+# 进程与线程总量上限（细节由 cgroup 控制）
+kernel.pid_max = 4194304
+kernel.threads-max = 262144
+EOF
+    fi
+
+    if [ ! -f "$TUNE_DIR/ai.conf" ]; then
+        cat > "$TUNE_DIR/ai.conf" <<'EOF'
+# AI / 推理 / 训练数据预处理场景
+#
+# 特点：大内存常驻、大量 mmap、频繁读模型文件。
+# 重点：内存不被回收、page cache 尽量大、映射区域充足、大文件顺序读。
+#
+# ⚠ lfOS 不含 NVIDIA 驱动（内核按服务器通用负载裁剪）。
+#   要在 GPU 上跑需自行编译驱动，并改用支持模块的内核配置。
+
+# 内存：推理服务常驻大模型，绝不能被换出
+vm.swappiness = 0
+vm.overcommit_memory = 1
+
+# 模型加载走 mmap，需要大量映射区域
+vm.max_map_count = 2097152
+
+# page cache 尽量留给模型文件
+vm.vfs_cache_pressure = 50
+vm.dirty_ratio = 40
+vm.dirty_background_ratio = 10
+
+# 模型文件几百 MB 到几十 GB，以顺序读为主
+# 预读窗口由 set_io 设到 8192KB
+
+# 数据加载器常同时打开大量文件
+fs.file-max = 4194304
+fs.nr_open = 1048576
+
+# 大页：部分推理框架会用到。默认 0，需要时由用户按内存自行设置
+vm.nr_hugepages = 0
+
+# 分布式推理/训练的通信
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.ipv4.tcp_rmem = 4096 262144 33554432
+net.ipv4.tcp_wmem = 4096 262144 33554432
+net.core.somaxconn = 8192
+net.ipv4.tcp_fastopen = 3
+EOF
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -255,11 +341,13 @@ set_io() {
     local sched="none" ra="128"
 
     case "$scenario" in
-        database) sched="mq-deadline"; ra="4096" ;;
-        file)     sched="none";        ra="4096" ;;
-        web)      sched="none";        ra="512"  ;;
-        minimal)  sched="none";        ra="128"  ;;
-        balanced) sched="none";        ra="256"  ;;
+        database)  sched="mq-deadline"; ra="4096" ;;
+        file)      sched="none";        ra="4096" ;;
+        web)       sched="none";        ra="512"  ;;
+        minimal)   sched="none";        ra="128"  ;;
+        container) sched="none";        ra="1024" ;;
+        ai)        sched="none";        ra="8192" ;;
+        balanced)  sched="none";        ra="256"  ;;
     esac
 
     local done_n=0
@@ -415,11 +503,13 @@ show_scenario() {
     done
     hr "磁盘参数"
     case "$want" in
-        database) say "  调度器 mq-deadline，预读 4096KB" ;;
-        file)     say "  调度器 none，预读 4096KB" ;;
-        web)      say "  调度器 none，预读 512KB" ;;
-        minimal)  say "  调度器 none，预读 128KB" ;;
-        *)        say "  调度器 none，预读 256KB" ;;
+        database)  say "  调度器 mq-deadline，预读 4096KB" ;;
+        file)      say "  调度器 none，预读 4096KB" ;;
+        web)       say "  调度器 none，预读 512KB" ;;
+        minimal)   say "  调度器 none，预读 128KB" ;;
+        container) say "  调度器 none，预读 1024KB" ;;
+        ai)        say "  调度器 none，预读 8192KB" ;;
+        *)         say "  调度器 none，预读 256KB" ;;
     esac
 }
 
@@ -441,7 +531,7 @@ main() {
             apply_sysctl_file "$f"
             ok "完成"
             ;;
-        web|database|file|minimal|balanced)
+        web|database|file|minimal|container|ai|balanced)
             apply_scenario "$cmd"
             ;;
         -h|--help|help)
@@ -450,7 +540,7 @@ main() {
         *)
             err "未知命令: $cmd"
             say ""
-            say "用法: $0 {status|web|database|file|minimal|balanced|show <场景>|apply <文件>}"
+            say "用法: $0 {status|web|database|file|minimal|container|ai|balanced|show <场景>|apply <文件>}"
             exit 1
             ;;
     esac
