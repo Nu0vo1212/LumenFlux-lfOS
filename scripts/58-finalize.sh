@@ -134,6 +134,17 @@ do_owner() {
 # ---------------------------------------------------------------------------
 #  2. /dev/fd 固化（进 init，因为 /dev 是 devtmpfs）
 # ---------------------------------------------------------------------------
+  # -------------------------------------------------------------------------
+  #  关键程序的特殊权限位（setuid/setgid）必须最后再修一次。
+  #
+  #  do_owner 里的全树 chown/chmod 会抹掉 setuid 位，
+  #  一旦丢失，普通用户改不了密码、su 不可用、mount 失效 ——
+  #  系统看起来正常，实际严重不可用。这个坑实测踩过。
+  # -------------------------------------------------------------------------
+  if [ -x /opt/lfOS/scripts/58b-fix-permissions.sh ]; then
+    LFS="$LFS" bash /opt/lfOS/scripts/58b-fix-permissions.sh
+  fi
+
 do_devfd() {
   printf '\n\033[1;36m===== 固化 /dev/fd 等标准符号链接 =====\n\033[0m'
 
@@ -257,6 +268,16 @@ do_gate() {
   ck "/etc/shadow 权限 640"     "[ \"\$(stat -c%a '$LFS/etc/shadow' 2>/dev/null)\" = 640 ]"
   ck "/etc/passwd 属主 root"    "[ \"\$(stat -c%U '$LFS/etc/passwd' 2>/dev/null)\" = root ]"
   ck "/root 权限 700"           "[ \"\$(stat -c%a '$LFS/root' 2>/dev/null)\" = 700 ]"
+  # 光检查"属主是 root"不够 —— 还要确认 setuid 位本身还在。
+  # 丢了位的话 passwd/su/mount 会静默失效，从表面看不出来。
+  _suid_missing=0
+  for _p in usr/bin/passwd usr/bin/su usr/bin/mount usr/bin/sudo \
+            usr/bin/chsh usr/bin/gpasswd usr/bin/newgrp usr/bin/umount; do
+    [ -e "$LFS/$_p" ] || continue
+    _mode=$(stat -c '%a' "$LFS/$_p" 2>/dev/null)
+    case "$_mode" in 4???|46??) ;; *) _suid_missing=$((_suid_missing+1));; esac
+  done
+  ck "关键 setuid 程序在位（passwd/su/mount/sudo 等）" "[ $_suid_missing -eq 0 ]"
   ck "setuid 程序全为 root"     "[ \$(find '$LFS' -xdev -perm -4000 -type f ! -user root 2>/dev/null | wc -l) -eq 0 ]"
   ck "/dev/fd 链接已建立"       "[ -L '$LFS/dev/fd' ] || [ -e '$LFS/dev/fd' ]"
   ck "init 里含 /dev/fd 逻辑"   "grep -q 'dev/fd' '$LFS/sbin/init'"
